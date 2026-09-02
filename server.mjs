@@ -4,8 +4,9 @@ import { extname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 const root = process.cwd();
-const dbPath = join(root, 'data', 'commonplace.sqlite');
-await mkdir(join(root, 'data'), { recursive: true });
+const dataDir = process.env.COMMONPLACE_DATA_DIR || join(root, 'data');
+const dbPath = join(dataDir, 'commonplace.sqlite');
+await mkdir(dataDir, { recursive: true });
 const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec(await readFile(join(root, 'db/schema.sql'), 'utf8'));
