@@ -12,27 +12,8 @@ const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec(await readFile(join(root, 'db/schema.sql'), 'utf8'));
 
-const count = db.prepare('SELECT COUNT(*) AS count FROM items').get().count;
-if (!count) seed();
-
-function seed() {
-  const add = db.prepare('INSERT INTO items(title,author,kind,body,source_url,colour) VALUES(?,?,?,?,?,?)');
-  const progress = db.prepare('INSERT INTO reading_progress(item_id,percent,scroll_y) VALUES(?,?,?)');
-  const addTag = db.prepare('INSERT OR IGNORE INTO tags(name) VALUES(?)');
-  const attach = db.prepare('INSERT OR IGNORE INTO item_tags(item_id,tag_id) SELECT ?, id FROM tags WHERE name=?');
-  const examples = [
-    ['The Case for the Creative Reading List','Mara Lin','article','Reading lists are often designed as funnels: add, save, optimise, complete. This one wants to be a shelf instead. Things may wait. They may travel between rooms. They may gather a note or two at the edge.\n\nA good list does not turn attention into debt. It quietly keeps a door open for the thought that was not ready yesterday.','https://example.org/creative-reading-list','#e86343',62,'attention'],
-    ['Ways of Seeing a System','A. S. Patel','article','Systems are rarely visible all at once. We notice them by returning, tracing a line, and letting a pattern become familiar enough to name.\n\nThe work is slow because it asks for a different form of attention: not collecting every signal, but staying with the useful ones.','https://example.org/ways-of-seeing','#506f93',38,'systems'],
-    ['Designing for the Long Middle','J. Ibrahim','pdf',null,null,'#aa6e55',0,'design'],
-    ['A Field Guide to Taking Notes','M. K. Hall','guide','A note does not need to be complete to be useful. It needs a place to return to, a small piece of context, and enough warmth that you will recognise why it mattered.',null,'#6e7d43',0,'notes'],
-    ['The More-than-Human Interface','N. Ortiz','paper','Interfaces organise relationships. When they work well, they make room for the things that cannot be reduced to a click target or a metric.',null,'#624d7e',81,'interfaces'],
-    ['Building Things That Last','Clare Vincent','course','A course is a path, not a backlog item. Keep the next lesson close and the rest of the syllabus out of your peripheral vision.',null,'#a77938',0,'craft']
-  ];
-  for (const [title, author, kind, body, url, colour, pct, tag] of examples) {
-    const { lastInsertRowid } = add.run(title, author, kind, body, url, colour);
-    progress.run(lastInsertRowid, pct, 0); addTag.run(tag); attach.run(lastInsertRowid, tag);
-  }
-}
+const legacyExamples = ['The Case for the Creative Reading List', 'Ways of Seeing a System', 'Designing for the Long Middle', 'A Field Guide to Taking Notes', 'The More-than-Human Interface', 'Building Things That Last'];
+db.prepare(`DELETE FROM items WHERE title IN (${legacyExamples.map(() => '?').join(',')})`).run(...legacyExamples);
 
 function item(row) { return { ...row, id: Number(row.id), progress: Number(row.progress ?? 0), tags: row.tags ? row.tags.split('||') : [] }; }
 function listItems() { return db.prepare(`SELECT i.id,i.title,i.author,i.kind,i.source_url,i.body,i.file_name,i.file_mime,i.colour,COALESCE(p.percent,0) progress,COALESCE(GROUP_CONCAT(t.name,'||'),'') tags FROM items i LEFT JOIN reading_progress p ON p.item_id=i.id LEFT JOIN item_tags it ON it.item_id=i.id LEFT JOIN tags t ON t.id=it.tag_id GROUP BY i.id ORDER BY p.percent DESC, i.updated_at DESC`).all().map(item); }
