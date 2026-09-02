@@ -17,9 +17,9 @@ All data lives in `data/commonplace.sqlite`, created and seeded on first start. 
 
 ## POC flows
 
-- Add a URL, pasted text, local text file, or local PDF through **add to shelf**.
+- Add either a public URL or a local PDF through **add to shelf**. URL titles use page metadata when a short, safe local fetch succeeds, then fall back to hostname/path. PDF titles use embedded metadata when present, otherwise the filename.
 - Open an item on its own `/read/:id` full-screen reading route.
 - Text and pasted content render in the reading surface; local PDFs render directly from SQLite through the local server.
 - Add notes in the margin. Scroll position and progress are written to SQLite locally.
 
-This is intentionally a compact POC, not a hardened archival reader. URL ingestion stores a private pointer rather than fetching a third-party page, and PDF progress is currently retained when leaving the dedicated reader (not within the browser's PDF viewer).
+This is intentionally a compact POC, not a hardened archival reader. URL ingestion stores a private pointer rather than third-party page content, and PDF progress is currently retained when leaving the dedicated reader (not within the browser's PDF viewer).

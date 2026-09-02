@@ -1,0 +1,14 @@
+/* Dense reader overrides: every reading type uses its right-hand surface. */
+.add-or{margin:15px 0;text-align:center;font:500 11px 'DM Mono',monospace;color:var(--coral)}
+.add-help{font:13px/1.45 Inter,sans-serif;color:var(--muted);margin:20px 0}
+.full-reader{grid-template-columns:minmax(220px,22vw) minmax(0,1fr)}
+.reader-sidebar{padding:34px 28px}
+.reader-sidebar h1{font-size:clamp(29px,3vw,46px);letter-spacing:-2.5px;margin:13px 0}
+.reader-progress{margin-top:38px}.tag-list{margin-top:20px}.source-link{margin-top:24px}
+.reading-surface{width:100%;max-width:none;padding:52px clamp(28px,7vw,120px) 80px;margin:0}
+.article-body{max-width:860px;font-size:19px}
+.pdf-frame{display:block;width:100%;height:calc(100vh - 126px);min-height:680px}
+.note-pad{border-color:#82934b;margin-top:38px;padding-top:18px}
+.note-pad textarea{min-height:76px;border-color:#82934b;background:#d7e77a;padding:10px}
+.saved-notes{margin-top:22px}.saved-notes article{padding:4px 10px;margin:10px 0;background:#d7e77a}.saved-notes p{font-size:15px}.no-notes{color:#536648}
+@media(max-width:720px){.reader-sidebar{padding:32px 20px}.reading-surface{padding:28px 14px 60px}.pdf-frame{height:78vh;min-height:560px}.article-body{font-size:17px}}
