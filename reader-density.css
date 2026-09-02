@@ -1,0 +1,41 @@
+/* PDFs are tools, not articles: give their viewer the whole reading surface. */
+.full-reader.pdf-reader {
+  grid-template-columns: clamp(220px, 23vw, 320px) minmax(0, 1fr);
+}
+
+.pdf-reader .reader-sidebar { padding: 40px 28px; }
+.pdf-reader .reader-sidebar h1 { font-size: clamp(30px, 3vw, 46px); letter-spacing: -2.4px; }
+.pdf-reader .reader-progress { margin-top: 48px; }
+
+.pdf-reading-surface {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  padding: 24px 28px 72px;
+}
+
+.pdf-reading-surface .pdf-frame {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 122px);
+  min-height: 620px;
+  border: 0;
+  background: #fff;
+}
+
+.pdf-reading-surface .note-pad { max-width: 900px; margin: 44px auto 0; }
+
+@media (max-width: 720px) {
+  .full-reader.pdf-reader { display: block; }
+  .pdf-reader .reader-sidebar { padding: 26px 20px; }
+  .pdf-reader .reader-sidebar h1 { font-size: 34px; margin: 10px 0; }
+  .pdf-reader .reader-progress { margin-top: 24px; }
+  .pdf-reading-surface { padding: 16px 0 58px; }
+  .pdf-reading-surface .pdf-frame {
+    height: calc(100vh - 68px);
+    min-height: 520px;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+  .pdf-reading-surface .note-pad { margin: 34px 20px 0; }
+}
