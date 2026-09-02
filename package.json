@@ -1,0 +1,12 @@
+{
+  "name": "commonplace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.mjs",
+    "start": "node server.mjs",
+    "check": "node --check server.mjs && node --check app.js",
+    "test": "node --test test/server.test.mjs"
+  }
+}

@@ -1,52 +1,17 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#17362c" />
-    <title>Commonplace — reading club prototype</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="./styles.css" />
-  </head>
-  <body>
-    <div class="grain"></div>
-    <header class="topbar">
-      <a class="wordmark" href="#top" aria-label="Commonplace home"><span>c</span>ommonplace</a>
-      <nav aria-label="Primary navigation"><a class="active" href="#shelf">shelf</a><a href="#club">the club</a><a href="#notes">notes</a></nav>
-      <button class="add-button" id="openAdd">+ add to shelf</button>
-    </header>
-
-    <main id="top">
-      <section class="hero" id="shelf">
-        <p class="eyebrow">your private reading room <span>·</span> september, 2026</p>
-        <div class="hero-line"><h1>A quiet place<br />for <em>all</em> your reading.</h1><p>Articles, papers, a strange course you’ll finally take. No doom-scroll. Just your next good thing.</p></div>
-        <div class="reading-now" id="resumeCard">
-          <div class="now-marker">currently with</div>
-          <div class="now-copy"><p class="item-kicker">essay · 18 min left</p><h2>The Case for the Creative<br />Reading List</h2><p class="byline">Mara Lin · <span>62% through</span></p></div>
-          <button class="resume" data-open="0">resume <span>→</span></button>
-          <div class="progress"><i style="width:62%"></i></div>
-        </div>
-      </section>
-
-      <section class="shelf-section">
-        <div class="section-heading"><div><p class="eyebrow">the shelf</p><h2>Pick your next thread.</h2></div><div class="filters" role="group" aria-label="Filter items"><button class="filter selected" data-filter="all">all <b>8</b></button><button class="filter" data-filter="reading">reading <b>3</b></button><button class="filter" data-filter="saved">saved <b>4</b></button></div></div>
-        <div class="cards" id="cards"></div>
-      </section>
-
-      <section class="club" id="club">
-        <div><p class="eyebrow">the sunday table</p><h2>One thing,<br />read <em>together.</em></h2></div>
-        <div class="club-copy"><p>This week’s informal reading club is a small stack around attention, interfaces, and the useful slowness of working things through.</p><button class="text-button">see this week’s table <span>→</span></button></div>
-        <p class="club-stamp">no algorithm<br />only taste</p>
-      </section>
-
-      <section class="notes-section" id="notes"><p class="eyebrow">marginalia</p><div class="note-grid"><blockquote>“We do not read to get through a list; we read to make room for something to stay.”</blockquote><div><p class="item-kicker">your latest note</p><p class="latest-note">“Could a good reading app make the unfinished feel inviting rather than guilty?”</p><button class="text-button" id="viewNotes">open notes <span>→</span></button></div></div></section>
-    </main>
-
-    <dialog id="reader"><button class="close" aria-label="Close reader">×</button><div class="reader-layout"><aside><p class="eyebrow">currently reading</p><h2 id="readerTitle"></h2><p id="readerMeta"></p><div class="reader-progress"><span>your place</span><div><i id="readerProgress"></i></div><b id="readerPercent"></b></div><div class="tag-list" id="readerTags"></div></aside><article><p class="article-label">a reading room sample</p><h1 id="articleTitle"></h1><p class="deck">This is where a full article, PDF, or guide would open. The prototype centres the feeling of returning: one calm surface, your place held without ceremony.</p><p>Reading lists are often designed as funnels: add, save, optimise, complete. This one wants to be a shelf instead. Things may wait. They may travel between rooms. They may gather a note or two at the edge.</p><p>The real product would use a proper article reader and PDF.js, while storing the last scroll anchor or PDF page locally. Nothing leaves your device by default.</p><div class="note-pad"><label for="noteInput">a note in the margin</label><textarea id="noteInput" placeholder="What do you want to remember?"></textarea><button id="saveNote">keep note</button><span id="saveState"></span></div></article></div></dialog>
-    <dialog id="adder"><button class="close" aria-label="Close add item">×</button><form method="dialog" id="addForm"><p class="eyebrow">a new thing for later</p><h2>Add it to the shelf.</h2><label>Title<input required name="title" placeholder="What are you saving?" /></label><label>Type<select name="type"><option>article</option><option>pdf</option><option>guide</option><option>course</option></select></label><label>Optional tag<input name="tag" placeholder="e.g. interfaces" /></label><button class="add-button" value="default">place on shelf →</button></form></dialog>
-    <footer><span>Commonplace, a local-first reading list concept.</span><span>made to be unhurried</span></footer>
-    <script src="./app.js"></script>
-  </body>
-</html>
+<head>
+  <meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="theme-color" content="#17362c"/><title>Commonplace — a private reading room</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/styles.css"/>
+</head>
+<body><div class="grain"></div>
+  <header class="topbar"><a class="wordmark" href="/" aria-label="Commonplace home"><span>c</span>ommonplace</a><nav aria-label="Primary"><a class="active" href="/">shelf</a><a href="#notes">notes</a></nav><button class="add-button" id="openAdd">+ add to shelf</button></header>
+  <main id="shelf"><section class="hero"><p class="eyebrow">your private reading room <span>·</span> local-first</p><div class="hero-line"><h1>A quiet place<br/>for <em>all</em> your reading.</h1><p>Articles, PDFs, a strange course you’ll finally take. No doom-scroll. Just your next good thing.</p></div><div class="reading-now" id="resumeCard"></div></section>
+  <section class="shelf-section"><div class="section-heading"><div><p class="eyebrow">the shelf</p><h2>Pick your next thread.</h2></div><div class="filters" role="group" aria-label="Filter items"><button class="filter selected" data-filter="all">all <b id="allCount"></b></button><button class="filter" data-filter="reading">reading <b id="readingCount"></b></button><button class="filter" data-filter="saved">saved <b id="savedCount"></b></button></div></div><div class="cards" id="cards"></div></section>
+  <section class="notes-section" id="notes"><p class="eyebrow">marginalia</p><div class="note-grid"><blockquote>“We do not read to get through a list; we read to make room for something to stay.”</blockquote><div><p class="item-kicker">kept locally</p><p class="latest-note">Your notes stay attached to the thing you were reading. No highlights, feeds, club rooms, or accounts.</p><button class="text-button" id="openAddNote">add something to the shelf <span>→</span></button></div></div></section></main>
+  <dialog id="adder"><button class="close" aria-label="Close add item">×</button><form id="addForm"><p class="eyebrow">a new thing for later</p><h2>Add it to the shelf.</h2><label>Title<input required name="title" placeholder="What are you saving?"/></label><label>Author / source<input name="author" placeholder="Optional"/></label><label>Type<select name="kind"><option value="article">article or link</option><option value="pdf">PDF</option><option value="text">text file</option><option value="guide">guide</option><option value="course">course</option><option value="paper">paper</option></select></label><label>URL<input name="sourceUrl" type="url" placeholder="https://… (optional)"/></label><label>Local PDF or text file<input name="file" type="file" accept="application/pdf,text/plain,text/markdown,.md,.txt"/></label><label>Paste text <textarea name="body" placeholder="Optional — a small local text reader is created from this."></textarea></label><label>Tags <input name="tags" placeholder="optional, comma-separated"/></label><button class="add-button">place on shelf →</button><p class="form-state" id="addState"></p></form></dialog>
+  <footer><span>Commonplace, a local-first reading list.</span><span>made to be unhurried</span></footer><script src="/app.js"></script>
+</body></html>
