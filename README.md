@@ -13,13 +13,13 @@ npm start
 
 `npm run dev` restarts the server while editing. `npm run check` syntax-checks the local server and browser script.
 
-All data lives in `data/commonplace.sqlite`, created and seeded on first start. Remove that file to reset the POC. The SQLite schema is tracked in `db/schema.sql`; it contains items, tags/item-tags, notes, and per-item reading progress.
+All data lives in `data/commonplace.sqlite`, created empty on first start. The SQLite schema is tracked in `db/schema.sql`; it contains items, tags/item-tags, notes, and per-item reading progress. Earlier template records are removed automatically; existing non-template items are preserved.
 
 ## POC flows
 
 - Add either a public URL or a local PDF through **add to shelf**. URL titles use page metadata when a short, safe local fetch succeeds, then fall back to hostname/path. PDF titles use embedded metadata when present, otherwise the filename.
-- Open an item on its own `/read/:id` full-screen reading route.
-- Text and pasted content render in the reading surface; local PDFs render directly from SQLite through the local server.
+- Open an item on its own `/read/:id` route. PDFs hand off to the browser's normal full-page PDF reader, directly from SQLite.
+- Text and pasted content render in the reading surface; local PDFs are served directly from SQLite.
 - Add notes in the margin. Scroll position and progress are written to SQLite locally.
 
-This is intentionally a compact POC, not a hardened archival reader. URL ingestion stores a private pointer rather than third-party page content, and PDF progress is currently retained when leaving the dedicated reader (not within the browser's PDF viewer).
+This is intentionally a compact POC, not a hardened archival reader. URL ingestion stores a private pointer rather than third-party page content. Browser-native PDF reading does not expose a reliable local progress hook, so PDF position is not currently recorded.
