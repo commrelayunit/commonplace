@@ -42,6 +42,11 @@ test('starts with an empty shelf rather than template entries', async () => {
   assert.deepEqual(await items.json(), []);
 });
 
+test('starts with an empty shelf rather than template entries', async () => {
+  const items = await fetch(`http://127.0.0.1:${port}/api/items`);
+  assert.deepEqual(await items.json(), []);
+});
+
 test('creates a PDF item, persists tags, notes, and reading progress', async () => {
   const fileData = Buffer.from('%PDF-1.4\n1 0 obj << /Title (A local test reading) >>\nendobj').toString('base64');
   const create = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'test.pdf', fileMime: 'application/pdf', fileData, tags: ['testing', 'local'] }) });
