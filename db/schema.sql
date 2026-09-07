@@ -1,17 +1,9 @@
 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS items (
-  id INTEGER PRIMARY KEY,
-  title TEXT NOT NULL,
-  author TEXT NOT NULL DEFAULT '',
-  kind TEXT NOT NULL CHECK(kind IN ('article','pdf','text','guide','course','paper')),
-  source_url TEXT,
-  body TEXT,
-  file_name TEXT,
-  file_mime TEXT,
-  file_data BLOB,
-  colour TEXT NOT NULL DEFAULT '#506f93',
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  id INTEGER PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL CHECK(kind IN ('article','pdf','text','guide','course','paper')),
+  source_url TEXT, body TEXT, file_name TEXT, file_mime TEXT, file_data BLOB, colour TEXT NOT NULL DEFAULT '#6d625c',
+  artifact_dir TEXT, content_path TEXT, original_path TEXT, capture_status TEXT NOT NULL DEFAULT 'legacy', parser_name TEXT, parser_version TEXT, source_fetched_at TEXT, source_content_type TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS item_tags (item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE, tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE, PRIMARY KEY(item_id, tag_id));

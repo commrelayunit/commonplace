@@ -1,0 +1,13 @@
+services:
+  commonplace:
+    build: .
+    env_file:
+      - .env
+    ports:
+      - "${COMMONPLACE_BIND_ADDRESS:-127.0.0.1}:${COMMONPLACE_PORT:-4173}:4173"
+    volumes:
+      - commonplace-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  commonplace-data:
