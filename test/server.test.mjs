@@ -61,10 +61,18 @@ before(async () => {
   pdfUnreachable = spawn(process.execPath, ['server.mjs'], { cwd: root, env: { ...process.env, PORT: String(pdfUnreachablePort), COMMONPLACE_DATA_DIR: pdfUnreachableDataDir, PDF_SERVICE_BASE_URL: 'http://127.0.0.1:4196' }, stdio: 'ignore' });
   await waitForServer(pdfOkPort); await waitForServer(pdfUnreachablePort);
 });
+async function tryEach(...steps) { for (const step of steps) { try { await step(); } catch (error) { console.warn(`Cleanup step failed: ${error.message}`); } } }
 after(async () => {
-  server.kill(); await new Promise(resolve => firecrawl.close(resolve)); await rm(dataDir, { recursive: true, force: true });
-  pdfOk.kill(); pdfUnreachable.kill(); await new Promise(resolve => pdfMarkdown.close(resolve));
-  await rm(pdfOkDataDir, { recursive: true, force: true }); await rm(pdfUnreachableDataDir, { recursive: true, force: true });
+  await tryEach(
+    () => server?.kill(),
+    () => new Promise(resolve => firecrawl ? firecrawl.close(resolve) : resolve()),
+    () => rm(dataDir, { recursive: true, force: true }),
+    () => pdfOk?.kill(),
+    () => pdfUnreachable?.kill(),
+    () => new Promise(resolve => pdfMarkdown ? pdfMarkdown.close(resolve) : resolve()),
+    () => rm(pdfOkDataDir, { recursive: true, force: true }),
+    () => rm(pdfUnreachableDataDir, { recursive: true, force: true })
+  );
 });
 
 test('starts with an empty shelf rather than template entries', async () => {

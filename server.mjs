@@ -21,8 +21,10 @@ const config = {
   browserFallback: process.env.CAPTURE_BROWSER_FALLBACK === 'true',
   playwrightExecutable: process.env.PLAYWRIGHT_EXECUTABLE_PATH || undefined,
   pdfServiceBaseUrl: optionalUrl(process.env.PDF_SERVICE_BASE_URL),
-  pdfServiceTimeoutMs: boundedInteger(process.env.PDF_SERVICE_TIMEOUT_MS, 60_000, 1_000, 300_000)
+  pdfServiceTimeoutMs: boundedInteger(process.env.PDF_SERVICE_TIMEOUT_MS, 180_000, 1_000, 300_000)
 };
+function assertValidPdfServiceUrl(rawValue, parsedValue) { if (rawValue && !parsedValue) throw Error('PDF_SERVICE_BASE_URL is set but not a valid http(s) URL.'); }
+assertValidPdfServiceUrl(process.env.PDF_SERVICE_BASE_URL, config.pdfServiceBaseUrl);
 await mkdir(libraryDir, { recursive: true });
 const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA foreign_keys = ON;');
@@ -58,6 +60,7 @@ function privateAddress(address) { return address === '::1' || address === '0.0.
 async function safeRemoteUrl(value) { const url=new URL(value); if (!['http:','https:'].includes(url.protocol) || !url.hostname || url.username || url.password) throw Error('Use a normal public http(s) URL.'); if (url.hostname === 'localhost' || url.hostname.endsWith('.local')) throw Error('Local addresses cannot be captured.'); const addresses=await lookup(url.hostname,{all:true}); if (!addresses.length || addresses.some(entry=>privateAddress(entry.address))) throw Error('Private-network addresses cannot be captured.'); return url; }
 async function boundedFetch(url, accept, maxBytes = config.captureMaxBytes) { const response=await fetch(url,{redirect:'manual',signal:AbortSignal.timeout(config.captureTimeoutMs),headers:{accept}}); if (!response.ok) throw Error(`Source returned ${response.status}.`); const length=Number(response.headers.get('content-length')||0); if (length > maxBytes) throw Error('Source is too large to capture.'); const data=Buffer.from(await response.arrayBuffer()); if (data.length > maxBytes) throw Error('Source is too large to capture.'); return {response,data}; }
 function looksLikePdfUrl(url) { return /\.pdf$/i.test(url.pathname); }
+function isPdfPayload(contentType, data) { return (contentType||'').includes('application/pdf') || data.subarray(0,5).toString('latin1')==='%PDF-'; }
 function pdfFileNameFromUrl(url) { const leaf = decodeURIComponent(basename(url.pathname) || '') || 'reading.pdf'; return /\.pdf$/i.test(leaf) ? leaf : `${leaf}.pdf`; }
 function stripHtml(html) { return decodeHtml(html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<noscript[\s\S]*?<\/noscript>/gi,'').replace(/<\/(?:p|div|h[1-6]|li|article|section)>/gi,'\n\n').replace(/<br\s*\/?>/gi,'\n').replace(/<[^>]+>/g,' ')); }
 function htmlToMarkdown(html, pageUrl, fallbackTitle) { const document = new JSDOM(html, { url: pageUrl }).window.document; const article = new Readability(document).parse(); const title = article?.title?.trim() || inferHtmlTitle(html, fallbackTitle); const text = article?.textContent?.trim() || stripHtml(html); return { title, markdown: `# ${title}\n\n_Source: ${pageUrl}_\n\n${text}\n` }; }
@@ -97,15 +100,23 @@ async function browserHtml(url) {
 }
 async function captureUrl(sourceUrl, id) {
   const url=await safeRemoteUrl(sourceUrl);
-  if (looksLikePdfUrl(url)) { const {data}=await boundedFetch(url,'application/pdf',config.uploadMaxBytes); return await capturePdf(pdfFileNameFromUrl(url),data,id); }
   let captured;
-  if (config.firecrawlBaseUrl) { try { captured = await firecrawlCapture(url.href); } catch (error) { console.warn(`Self-hosted Firecrawl unavailable: ${error.message}`); } }
+  if (looksLikePdfUrl(url)) {
+    const {response,data}=await boundedFetch(url,'application/pdf',config.uploadMaxBytes);
+    const contentType=response.headers.get('content-type')||'';
+    if (isPdfPayload(contentType,data)) return await capturePdf(pdfFileNameFromUrl(url),data,id);
+    const html = contentType.includes('text/html') ? data.toString('utf8') : await browserHtml(url);
+    if (!html) throw Error('The URL ends in .pdf but did not return PDF or HTML content.');
+    const local = htmlToMarkdown(html,url.href,fallbackUrlTitle(sourceUrl));
+    captured={title:local.title,markdown:local.markdown,html,contentType:'text/html',parser:'readability'};
+  }
+  if (!captured && config.firecrawlBaseUrl) { try { captured = await firecrawlCapture(url.href); } catch (error) { console.warn(`Self-hosted Firecrawl unavailable: ${error.message}`); } }
   if (!captured) {
     let html;
     try {
       const {response,data}=await boundedFetch(url,'text/html,application/pdf;q=0.9,application/xhtml+xml',config.uploadMaxBytes);
       const contentType=response.headers.get('content-type')||'';
-      if (contentType.includes('application/pdf') || data.subarray(0,5).toString('latin1')==='%PDF-') return await capturePdf(pdfFileNameFromUrl(url),data,id);
+      if (isPdfPayload(contentType,data)) return await capturePdf(pdfFileNameFromUrl(url),data,id);
       if (!contentType.includes('text/html')) throw Error('The URL did not return an HTML page.');
       html=data.toString('utf8');
     } catch (error) { html = await browserHtml(url); if (!html) throw error; }
@@ -185,4 +196,4 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   server.listen(process.env.PORT || 4173, () => console.log(`Commonplace listening on http://localhost:${process.env.PORT || 4173}`));
 }
 
-export { isConnectionError, looksLikePdfUrl, pdfFileNameFromUrl };
+export { isConnectionError, looksLikePdfUrl, pdfFileNameFromUrl, assertValidPdfServiceUrl, isPdfPayload };
