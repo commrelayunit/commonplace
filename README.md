@@ -20,7 +20,7 @@ All data lives in `data/commonplace.sqlite`, created empty on first start. The S
 - Add either a public URL or a local PDF through **add to shelf**. URL capture writes `source.html` and cleaned `content.md`; PDF capture writes `original.pdf` and a Markdown text-layer conversion. The reader always reads the local Markdown copy, so progress is meaningful for both formats.
 - A captured item is arranged as `library/<id>/content.md`, its original (`source.html` or `original.pdf`), and `assets/`. SQLite records parser name/version, content type, capture timestamp, and artifact paths.
 - URL capture prefers the configured self-hosted Firecrawl `/v1/scrape` endpoint and otherwise uses a bounded local HTML + Mozilla Readability fallback (safe DNS resolution, public HTTP(S) only, 8-second timeout, 8 MB response cap). Set `CAPTURE_BROWSER_FALLBACK=true` only when Playwright is installed and browser-rendered pages are needed. It never calls Firecrawl Cloud. Asset collection is reserved for the adapter/next pass, so the current fallback does not download arbitrary tracker images.
-- PDF conversion uses PDF.js for a lightweight local text-layer extraction, retaining the original either way. For complex layouts, the optional `scripts/marker-convert.sh INPUT.pdf OUTPUT_DIR` adapter invokes locally installed Marker and writes the same `content.md`/`assets/` contract; no cloud OCR, API key, or external model service is required.
+- PDF conversion goes through the optional `services/pdf-markdown` service when `PDF_SERVICE_BASE_URL` is set. It is a small FastAPI wrapper around locally run Marker that accepts a PDF at `POST /convert` and returns Markdown (plus any extracted images), so complex layouts convert well. Marker's models are downloaded once and cached in the `pdf-markdown-models` volume; no cloud OCR or API key is involved. If the service is unset or unreachable, capture falls back to PDF.js for a lightweight local text-layer extraction. The original PDF is retained either way. URLs that end in `.pdf` are routed to this PDF path instead of Firecrawl, and other URLs that turn out to serve a PDF are handled the same way.
 - Add notes in the margin. Scroll position and progress are written to SQLite locally. Original PDFs remain accessible from the reader as a reference, but are not the canonical reading surface.
 
 ## Recovery and security
@@ -45,3 +45,16 @@ curl -fsSL https://raw.githubusercontent.com/commrelayunit/commonplace/main/scri
 ```
 
 The LXC path installs dependencies and prepares `data/`; run `npm start` under the container's service manager. Neither mode deploys or configures Firecrawl. Add its private URL to `.env` only after the instance has its own outbound SSRF controls.
+
+### Local dev dependencies
+
+`compose.yaml` on its own is the production stack: only Commonplace. To develop against the PDF service and a self-hosted Firecrawl, layer the dev overlay on top of it. This is a two-step workflow (the overlay includes Firecrawl's compose file, which needs Docker Compose 2.20+):
+
+```sh
+scripts/dev-bootstrap.sh    # once: clones Firecrawl at a pinned tag into .dev/firecrawl
+docker compose -f compose.yaml -f compose.dev.yaml up -d
+```
+
+`compose.dev.yaml` builds `services/pdf-markdown` and publishes it on `PDF_SERVICE_PORT` (default 8008). The bootstrap script prints the `FIRECRAWL_BASE_URL` and `PDF_SERVICE_BASE_URL` lines to add to `.env`, but those `localhost` values are only correct for `npm start` on the host. When Commonplace runs in the container alongside the overlay, use the Compose service name on the shared network instead, such as `http://pdf-markdown:8008`.
+
+Do not use `compose.dev.yaml` in production. Production runs `docker compose up -d --build` with `compose.yaml` alone, which does not start Firecrawl or the PDF service. In that case, set `FIRECRAWL_BASE_URL` and `PDF_SERVICE_BASE_URL` to wherever those services actually run, or leave `PDF_SERVICE_BASE_URL` blank to use the PDF.js fallback.
