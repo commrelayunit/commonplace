@@ -56,7 +56,9 @@ function boundedInteger(value, fallback, min, max) { const number = Number(value
 function optionalUrl(value) { if (!value) return null; try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? url : null; } catch { return null; } }
 function privateAddress(address) { return address === '::1' || address === '0.0.0.0' || address.startsWith('fc') || address.startsWith('fd') || address.startsWith('fe80:') || /^127\./.test(address) || /^10\./.test(address) || /^192\.168\./.test(address) || /^169\.254\./.test(address) || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address) || /^172\.(1[6-9]|2\d|3[01])\./.test(address); }
 async function safeRemoteUrl(value) { const url=new URL(value); if (!['http:','https:'].includes(url.protocol) || !url.hostname || url.username || url.password) throw Error('Use a normal public http(s) URL.'); if (url.hostname === 'localhost' || url.hostname.endsWith('.local')) throw Error('Local addresses cannot be captured.'); const addresses=await lookup(url.hostname,{all:true}); if (!addresses.length || addresses.some(entry=>privateAddress(entry.address))) throw Error('Private-network addresses cannot be captured.'); return url; }
-async function boundedFetch(url, accept) { const response=await fetch(url,{redirect:'manual',signal:AbortSignal.timeout(config.captureTimeoutMs),headers:{accept}}); if (!response.ok) throw Error(`Source returned ${response.status}.`); const length=Number(response.headers.get('content-length')||0); if (length > config.captureMaxBytes) throw Error('Source is too large to capture.'); const data=Buffer.from(await response.arrayBuffer()); if (data.length > config.captureMaxBytes) throw Error('Source is too large to capture.'); return {response,data}; }
+async function boundedFetch(url, accept, maxBytes = config.captureMaxBytes) { const response=await fetch(url,{redirect:'manual',signal:AbortSignal.timeout(config.captureTimeoutMs),headers:{accept}}); if (!response.ok) throw Error(`Source returned ${response.status}.`); const length=Number(response.headers.get('content-length')||0); if (length > maxBytes) throw Error('Source is too large to capture.'); const data=Buffer.from(await response.arrayBuffer()); if (data.length > maxBytes) throw Error('Source is too large to capture.'); return {response,data}; }
+function looksLikePdfUrl(url) { return /\.pdf$/i.test(url.pathname); }
+function pdfFileNameFromUrl(url) { const leaf = decodeURIComponent(basename(url.pathname) || '') || 'reading.pdf'; return /\.pdf$/i.test(leaf) ? leaf : `${leaf}.pdf`; }
 function stripHtml(html) { return decodeHtml(html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<noscript[\s\S]*?<\/noscript>/gi,'').replace(/<\/(?:p|div|h[1-6]|li|article|section)>/gi,'\n\n').replace(/<br\s*\/?>/gi,'\n').replace(/<[^>]+>/g,' ')); }
 function htmlToMarkdown(html, pageUrl, fallbackTitle) { const document = new JSDOM(html, { url: pageUrl }).window.document; const article = new Readability(document).parse(); const title = article?.title?.trim() || inferHtmlTitle(html, fallbackTitle); const text = article?.textContent?.trim() || stripHtml(html); return { title, markdown: `# ${title}\n\n_Source: ${pageUrl}_\n\n${text}\n` }; }
 function inferHtmlTitle(html, fallback) { const og=html.match(/<meta[^>]+(?:property|name)=["'](?:og:title|twitter:title)["'][^>]+content=["']([^"']+)["']/i) || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:title|twitter:title)["']/i); return decodeHtml(og?.[1] || html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '') || fallback; }
@@ -94,16 +96,24 @@ async function browserHtml(url) {
   finally { await browser.close(); }
 }
 async function captureUrl(sourceUrl, id) {
-  const url=await safeRemoteUrl(sourceUrl); let captured;
+  const url=await safeRemoteUrl(sourceUrl);
+  if (looksLikePdfUrl(url)) { const {data}=await boundedFetch(url,'application/pdf',config.uploadMaxBytes); return await capturePdf(pdfFileNameFromUrl(url),data,id); }
+  let captured;
   if (config.firecrawlBaseUrl) { try { captured = await firecrawlCapture(url.href); } catch (error) { console.warn(`Self-hosted Firecrawl unavailable: ${error.message}`); } }
   if (!captured) {
-    let html; try { const {response,data}=await boundedFetch(url,'text/html,application/xhtml+xml'); if (!(response.headers.get('content-type')||'').includes('text/html')) throw Error('The URL did not return an HTML page.'); html=data.toString('utf8'); }
-    catch (error) { html = await browserHtml(url); if (!html) throw error; }
+    let html;
+    try {
+      const {response,data}=await boundedFetch(url,'text/html,application/pdf;q=0.9,application/xhtml+xml',config.uploadMaxBytes);
+      const contentType=response.headers.get('content-type')||'';
+      if (contentType.includes('application/pdf') || data.subarray(0,5).toString('latin1')==='%PDF-') return await capturePdf(pdfFileNameFromUrl(url),data,id);
+      if (!contentType.includes('text/html')) throw Error('The URL did not return an HTML page.');
+      html=data.toString('utf8');
+    } catch (error) { html = await browserHtml(url); if (!html) throw error; }
     const local = htmlToMarkdown(html,url.href,fallbackUrlTitle(sourceUrl)); captured={title:local.title,markdown:local.markdown,html,contentType:'text/html',parser:'readability'};
   }
   const dir=await itemDir(id); const originalPath=join(dir, captured.html ? 'source.html' : 'source-url.txt');
   await writeFile(originalPath, captured.html || `${url.href}\n`); const contentPath=join(dir,'content.md'); await writeFile(contentPath,captured.markdown);
-  return {title:captured.title,dir,contentPath,originalPath,markdown:captured.markdown,parser:captured.parser || 'self-hosted-firecrawl',contentType:captured.contentType,originalMime:captured.html ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8'};
+  return {title:captured.title,dir,contentPath,originalPath,markdown:captured.markdown,parser:captured.parser || 'self-hosted-firecrawl',contentType:captured.contentType,originalMime:captured.html ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8', kind:'article'};
 }
 function isConnectionError(error) { return error instanceof TypeError && ['ECONNREFUSED','ENOTFOUND','EAI_AGAIN'].includes(error.cause?.code); }
 
@@ -158,7 +168,7 @@ const server=createServer(async (req,res)=>{
       let captured;
       try { captured=sourceUrl ? await captureUrl(sourceUrl,id) : await capturePdf(x.fileName,file,id); }
       catch (error) { db.prepare('DELETE FROM items WHERE id=?').run(id); await rm(join(libraryDir, String(id)), { recursive: true, force: true }); throw error; }
-      db.prepare('UPDATE items SET title=?,body=?,file_mime=COALESCE(file_mime,?),artifact_dir=?,content_path=?,original_path=?,capture_status=?,parser_name=?,parser_version=?,source_fetched_at=CURRENT_TIMESTAMP,source_content_type=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(captured.title,captured.markdown,captured.originalMime,captured.dir,captured.contentPath,captured.originalPath,'ready',captured.parser,'1',captured.contentType,id);
+      db.prepare('UPDATE items SET title=?,body=?,file_mime=COALESCE(file_mime,?),artifact_dir=?,content_path=?,original_path=?,capture_status=?,parser_name=?,parser_version=?,source_fetched_at=CURRENT_TIMESTAMP,source_content_type=?,kind=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(captured.title,captured.markdown,captured.originalMime,captured.dir,captured.contentPath,captured.originalPath,'ready',captured.parser,'1',captured.contentType,captured.kind,id);
       db.prepare('INSERT INTO reading_progress(item_id) VALUES(?)').run(id); withTags(id,Array.isArray(x.tags)?x.tags:[]); return json(res,201,getItem(id));
     }
     const match=path.match(/^\/api\/items\/(\d+)(?:\/(.+))?$/); if(match) { const id=Number(match[1]), action=match[2]; if (!getItem(id)) return json(res,404,{error:'Not found'});
@@ -175,4 +185,4 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   server.listen(process.env.PORT || 4173, () => console.log(`Commonplace listening on http://localhost:${process.env.PORT || 4173}`));
 }
 
-export { isConnectionError };
+export { isConnectionError, looksLikePdfUrl, pdfFileNameFromUrl };

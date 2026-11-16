@@ -28,8 +28,11 @@ async function waitForServer(targetPort) {
   throw new Error('Commonplace test server did not start');
 }
 
+let firecrawlRequests = 0;
+
 before(async () => {
   firecrawl = createServer(async (request, response) => {
+    firecrawlRequests += 1;
     let payload = '';
     for await (const chunk of request) payload += chunk;
     assert.equal(request.method, 'POST');
@@ -106,6 +109,13 @@ test('captures a URL through a deterministic self-hosted Firecrawl fixture', asy
   assert.equal(item.parser_name, 'self-hosted-firecrawl');
   assert.match(await readFile(item.content_path, 'utf8'), /deterministic local capture/);
   assert.ok((await stat(item.original_path)).isFile());
+});
+
+test('skips Firecrawl for a PDF-looking URL and fails closed without a reachable PDF host', async () => {
+  const before = firecrawlRequests;
+  const response = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sourceUrl: 'https://example.com/does-not-exist.pdf' }) });
+  assert.equal(response.status, 400);
+  assert.equal(firecrawlRequests, before);
 });
 
 test('rejects local-network capture targets before fetching them', async () => {
