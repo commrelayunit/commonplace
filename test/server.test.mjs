@@ -13,9 +13,16 @@ const dataDir = await mkdtemp(join(tmpdir(), 'commonplace-test-'));
 let server;
 let firecrawl;
 
-async function waitForServer() {
+const pdfServicePort = 4192;
+const pdfOkPort = 4193;
+const pdfUnreachablePort = 4195;
+let pdfMarkdown, pdfOk, pdfUnreachable;
+const pdfOkDataDir = await mkdtemp(join(tmpdir(), 'commonplace-test-'));
+const pdfUnreachableDataDir = await mkdtemp(join(tmpdir(), 'commonplace-test-'));
+
+async function waitForServer(targetPort) {
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    try { const response = await fetch(`http://127.0.0.1:${port}/api/items`); if (response.ok) return; } catch {}
+    try { const response = await fetch(`http://127.0.0.1:${targetPort}/api/items`); if (response.ok) return; } catch {}
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   throw new Error('Commonplace test server did not start');
@@ -33,9 +40,29 @@ before(async () => {
   });
   await new Promise(resolve => firecrawl.listen(firecrawlPort, '127.0.0.1', resolve));
   server = spawn(process.execPath, ['server.mjs'], { cwd: root, env: { ...process.env, PORT: String(port), COMMONPLACE_DATA_DIR: dataDir, FIRECRAWL_BASE_URL: `http://127.0.0.1:${firecrawlPort}` }, stdio: 'ignore' });
-  await waitForServer();
+  await waitForServer(port);
+
+  pdfMarkdown = createServer(async (request, response) => {
+    let chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = Buffer.concat(chunks);
+    if (body.includes('TRIGGER_500')) { response.writeHead(500); return response.end('boom'); }
+    if (body.includes('TRIGGER_EMPTY')) { response.writeHead(200, { 'content-type': 'application/json' }); return response.end(JSON.stringify({ markdown: '', images: {} })); }
+    if (body.includes('TRIGGER_SLOW')) await new Promise(resolve => setTimeout(resolve, 3000));
+    if (body.includes('TRIGGER_TRAVERSAL')) { response.writeHead(200, { 'content-type': 'application/json' }); return response.end(JSON.stringify({ markdown: '# Traversal\n\nShould stay inside assets/.', images: { '../../evil.png': Buffer.from('fake').toString('base64') } })); }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ markdown: '# Fixture PDF\n\nConverted via the mocked PDF-markdown service.', images: { 'fig1.png': Buffer.from('fake-image-bytes').toString('base64') } }));
+  });
+  await new Promise(resolve => pdfMarkdown.listen(pdfServicePort, '127.0.0.1', resolve));
+  pdfOk = spawn(process.execPath, ['server.mjs'], { cwd: root, env: { ...process.env, PORT: String(pdfOkPort), COMMONPLACE_DATA_DIR: pdfOkDataDir, PDF_SERVICE_BASE_URL: `http://127.0.0.1:${pdfServicePort}`, PDF_SERVICE_TIMEOUT_MS: '1000' }, stdio: 'ignore' });
+  pdfUnreachable = spawn(process.execPath, ['server.mjs'], { cwd: root, env: { ...process.env, PORT: String(pdfUnreachablePort), COMMONPLACE_DATA_DIR: pdfUnreachableDataDir, PDF_SERVICE_BASE_URL: 'http://127.0.0.1:4196' }, stdio: 'ignore' });
+  await waitForServer(pdfOkPort); await waitForServer(pdfUnreachablePort);
 });
-after(async () => { server.kill(); await new Promise(resolve => firecrawl.close(resolve)); await rm(dataDir, { recursive: true, force: true }); });
+after(async () => {
+  server.kill(); await new Promise(resolve => firecrawl.close(resolve)); await rm(dataDir, { recursive: true, force: true });
+  pdfOk.kill(); pdfUnreachable.kill(); await new Promise(resolve => pdfMarkdown.close(resolve));
+  await rm(pdfOkDataDir, { recursive: true, force: true }); await rm(pdfUnreachableDataDir, { recursive: true, force: true });
+});
 
 test('starts with an empty shelf rather than template entries', async () => {
   const items = await fetch(`http://127.0.0.1:${port}/api/items`);
@@ -97,4 +124,50 @@ test('infers a PDF title from metadata and falls back to its filename', async ()
   const fallback = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'reading_notes-final.pdf', fileMime: 'application/pdf', fileData: filenamePdf }) });
   assert.equal(fallback.status, 201);
   assert.equal((await fallback.json()).title, 'reading notes final');
+});
+
+test('converts an uploaded PDF through the mocked PDF-markdown service and stores returned assets', async () => {
+  const fileData = Buffer.from('%PDF-1.4 plain upload').toString('base64');
+  const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'ok.pdf', fileMime: 'application/pdf', fileData }) });
+  assert.equal(create.status, 201);
+  const item = await create.json();
+  assert.equal(item.parser_name, 'pdf-markdown-service');
+  assert.match(await readFile(item.content_path, 'utf8'), /Converted via the mocked PDF-markdown service/);
+  assert.ok((await stat(join(item.artifact_dir, 'assets', 'fig1.png'))).isFile());
+});
+
+test('falls back to the local extractor when the PDF service is unreachable', async () => {
+  const fileData = Buffer.from('%PDF-1.4\n1 0 obj << /Title (Kept locally) >>\nendobj').toString('base64');
+  const create = await fetch(`http://127.0.0.1:${pdfUnreachablePort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'x.pdf', fileMime: 'application/pdf', fileData }) });
+  assert.equal(create.status, 201);
+  const item = await create.json();
+  assert.equal(item.parser_name, 'pdfjs-text-layer');
+  assert.equal(item.title, 'Kept locally');
+});
+
+test('surfaces a PDF-service HTTP failure instead of silently degrading', async () => {
+  const fileData = Buffer.from('%PDF-1.4 TRIGGER_500').toString('base64');
+  const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'bad.pdf', fileMime: 'application/pdf', fileData }) });
+  assert.equal(create.status, 400);
+});
+
+test('surfaces an empty-markdown PDF-service response as a failure', async () => {
+  const fileData = Buffer.from('%PDF-1.4 TRIGGER_EMPTY').toString('base64');
+  const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'empty.pdf', fileMime: 'application/pdf', fileData }) });
+  assert.equal(create.status, 400);
+});
+
+test('treats a slow PDF-service response as a failure, not a silent fallback', async () => {
+  const fileData = Buffer.from('%PDF-1.4 TRIGGER_SLOW').toString('base64');
+  const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'slow.pdf', fileMime: 'application/pdf', fileData }) });
+  assert.equal(create.status, 400);
+});
+
+test("sanitizes PDF-service image filenames to stay inside the item's assets directory", async () => {
+  const fileData = Buffer.from('%PDF-1.4 TRIGGER_TRAVERSAL').toString('base64');
+  const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'trav.pdf', fileMime: 'application/pdf', fileData }) });
+  assert.equal(create.status, 201);
+  const item = await create.json();
+  assert.ok((await stat(join(item.artifact_dir, 'assets', 'evil.png'))).isFile());
+  await assert.rejects(stat(join(item.artifact_dir, '..', 'evil.png')));
 });

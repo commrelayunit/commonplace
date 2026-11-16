@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile, rm } from 'node:fs/promises';
 import { extname, join, basename } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { lookup } from 'node:dns/promises';
 import 'dotenv/config';
@@ -18,7 +19,9 @@ const config = {
   firecrawlBaseUrl: optionalUrl(process.env.FIRECRAWL_BASE_URL),
   firecrawlApiKey: process.env.FIRECRAWL_API_KEY || '',
   browserFallback: process.env.CAPTURE_BROWSER_FALLBACK === 'true',
-  playwrightExecutable: process.env.PLAYWRIGHT_EXECUTABLE_PATH || undefined
+  playwrightExecutable: process.env.PLAYWRIGHT_EXECUTABLE_PATH || undefined,
+  pdfServiceBaseUrl: optionalUrl(process.env.PDF_SERVICE_BASE_URL),
+  pdfServiceTimeoutMs: boundedInteger(process.env.PDF_SERVICE_TIMEOUT_MS, 60_000, 1_000, 300_000)
 };
 await mkdir(libraryDir, { recursive: true });
 const db = new DatabaseSync(dbPath);
@@ -102,7 +105,46 @@ async function captureUrl(sourceUrl, id) {
   await writeFile(originalPath, captured.html || `${url.href}\n`); const contentPath=join(dir,'content.md'); await writeFile(contentPath,captured.markdown);
   return {title:captured.title,dir,contentPath,originalPath,markdown:captured.markdown,parser:captured.parser || 'self-hosted-firecrawl',contentType:captured.contentType,originalMime:captured.html ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8'};
 }
-async function capturePdf(fileName, data, id) { const title=inferPdfTitle(fileName,data); const dir=await itemDir(id); const original=join(dir,'original.pdf'); const contentPath=join(dir,'content.md'); await writeFile(original,data); const markdown=await pdfToMarkdown(data,title); await writeFile(contentPath,markdown); return {title,dir,contentPath,originalPath:original,markdown,parser:'pdfjs-text-layer',contentType:'application/pdf',originalMime:'application/pdf'}; }
+function isConnectionError(error) { return error instanceof TypeError && ['ECONNREFUSED','ENOTFOUND','EAI_AGAIN'].includes(error.cause?.code); }
+
+async function pdfServiceConvert(data) {
+  const endpoint = new URL('/convert', config.pdfServiceBaseUrl);
+  const form = new FormData();
+  form.append('file', new Blob([data], { type: 'application/pdf' }), 'document.pdf');
+  const response = await fetch(endpoint, { method: 'POST', signal: AbortSignal.timeout(config.pdfServiceTimeoutMs), body: form });
+  if (!response.ok) throw Error(`PDF service returned ${response.status}.`);
+  const result = await response.json();
+  if (typeof result.markdown !== 'string' || !result.markdown.trim()) throw Error('PDF service returned no Markdown.');
+  return result;
+}
+
+async function writeImages(dir, images) {
+  for (const [name, encoded] of Object.entries(images || {})) {
+    await writeFile(join(dir, 'assets', basename(name)), Buffer.from(encoded, 'base64'));
+  }
+}
+
+async function capturePdf(fileName, data, id) {
+  const title = inferPdfTitle(fileName, data);
+  const dir = await itemDir(id);
+  const original = join(dir, 'original.pdf');
+  const contentPath = join(dir, 'content.md');
+  await writeFile(original, data);
+  let markdown, parser, images = {};
+  if (config.pdfServiceBaseUrl) {
+    try {
+      const result = await pdfServiceConvert(data);
+      markdown = result.markdown; images = result.images || {}; parser = 'pdf-markdown-service';
+    } catch (error) {
+      if (!isConnectionError(error)) throw error;
+      console.warn(`PDF service unreachable: ${error.message}`);
+    }
+  }
+  if (!markdown) { markdown = await pdfToMarkdown(data, title); parser = 'pdfjs-text-layer'; }
+  await writeFile(contentPath, markdown);
+  await writeImages(dir, images);
+  return { title, dir, contentPath, originalPath: original, markdown, parser, contentType: 'application/pdf', originalMime: 'application/pdf', kind: 'pdf' };
+}
 
 const server=createServer(async (req,res)=>{
   const url=new URL(req.url, `http://${req.headers.host}`); const path=url.pathname;
@@ -129,4 +171,8 @@ const server=createServer(async (req,res)=>{
     json(res,404,{error:'Not found'});
   } catch(error) { console.error(error); json(res,400,{error:error.message||'Something went wrong locally.'}); }
 });
-server.listen(process.env.PORT || 4173,()=>console.log(`Commonplace listening on http://localhost:${process.env.PORT||4173}`));
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  server.listen(process.env.PORT || 4173, () => console.log(`Commonplace listening on http://localhost:${process.env.PORT || 4173}`));
+}
+
+export { isConnectionError };
