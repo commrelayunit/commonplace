@@ -1,0 +1,7 @@
+.dev/
+services/
+node_modules/
+data/
+.env
+.superpowers/
+.git

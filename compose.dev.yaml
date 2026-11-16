@@ -5,14 +5,15 @@ services:
   pdf-markdown:
     build: ./services/pdf-markdown
     ports:
-      - "${PDF_SERVICE_PORT:-8008}:8008"
+      - "127.0.0.1:${PDF_SERVICE_PORT:-8008}:8008"
     volumes:
-      - pdf-markdown-models:/root/.cache/huggingface
+      - pdf-markdown-cache:/root/.cache
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health')"]
       interval: 30s
       timeout: 5s
       retries: 5
+      start_period: 300s
 
 volumes:
-  pdf-markdown-models:
+  pdf-markdown-cache:

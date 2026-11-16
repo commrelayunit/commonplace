@@ -1,7 +1,7 @@
-fastapi
-uvicorn[standard]
-python-multipart
-httpx
-pytest
-marker-pdf
-pillow
+fastapi==0.163.1
+uvicorn[standard]==0.54.0
+python-multipart==0.0.34
+httpx==0.28.1
+pytest==9.2.0
+marker-pdf==2.2.0
+pillow==10.4.0

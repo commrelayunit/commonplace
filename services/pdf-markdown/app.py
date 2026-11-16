@@ -2,10 +2,9 @@ import base64
 import io
 import os
 import tempfile
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-
-app = FastAPI()
 
 _models = None
 
@@ -17,6 +16,15 @@ def get_models():
 
         _models = create_model_dict()
     return _models
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    get_models()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def encode_image(image) -> str:
@@ -52,11 +60,11 @@ def health():
 
 
 @app.post("/convert")
-async def convert(file: UploadFile = File(...)):
+def convert(file: UploadFile = File(...)):
     is_pdf = file.content_type == "application/pdf" or (file.filename or "").lower().endswith(".pdf")
     if not is_pdf:
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
-    data = await file.read()
+    data = file.file.read()
     try:
         return convert_pdf_bytes(data)
     except Exception as error:
