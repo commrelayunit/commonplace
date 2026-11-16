@@ -1,3 +1,6 @@
+include:
+  - path: ${FIRECRAWL_CHECKOUT_DIR:-.dev/firecrawl}/docker-compose.yaml
+
 services:
   pdf-markdown:
     build: ./services/pdf-markdown
