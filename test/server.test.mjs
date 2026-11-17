@@ -173,6 +173,17 @@ test('converts an uploaded PDF through the mocked PDF-markdown service and store
   assert.equal(item.parser_name, 'pdf-markdown-service');
   assert.match(await readFile(item.content_path, 'utf8'), /Converted via the mocked PDF-markdown service/);
   assert.ok((await stat(join(item.artifact_dir, 'assets', 'fig1.png'))).isFile());
+
+  const asset = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items/${item.id}/assets/fig1.png`);
+  assert.equal(asset.status, 200);
+  assert.equal(asset.headers.get('content-type'), 'image/png');
+  assert.equal(Buffer.from(await asset.arrayBuffer()).toString(), 'fake-image-bytes');
+
+  const missing = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items/${item.id}/assets/does-not-exist.png`);
+  assert.equal(missing.status, 404);
+
+  const traversal = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items/${item.id}/assets/..%2F..%2F..%2Fetc%2Fpasswd`);
+  assert.equal(traversal.status, 404);
 });
 
 test('falls back to the local extractor when the PDF service is unreachable', async () => {
