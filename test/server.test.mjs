@@ -28,6 +28,16 @@ async function waitForServer(targetPort) {
   throw new Error('Commonplace test server did not start');
 }
 
+async function waitForCapture(targetPort, id) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const response = await fetch(`http://127.0.0.1:${targetPort}/api/items/${id}`);
+    const item = await response.json();
+    if (item.capture_status === 'ready' || item.capture_status === 'failed') return item;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error(`Item ${id} never left the capturing state`);
+}
+
 let firecrawlRequests = 0;
 
 before(async () => {
@@ -85,44 +95,52 @@ test('starts with an empty shelf rather than template entries', async () => {
   assert.deepEqual(await items.json(), []);
 });
 
-test('creates a PDF item, persists tags, notes, and reading progress', async () => {
+test('creates a PDF item immediately in a capturing state, then settles with tags, notes, and reading progress', async () => {
   const fileData = Buffer.from('%PDF-1.4\n1 0 obj << /Title (A local test reading) >>\nendobj').toString('base64');
   const create = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'test.pdf', fileMime: 'application/pdf', fileData, tags: ['testing', 'local'] }) });
   assert.equal(create.status, 201);
-  const item = await create.json();
-  assert.equal(item.title, 'A local test reading');
-  assert.deepEqual(item.tags.sort(), ['local', 'testing']);
+  const created = await create.json();
+  assert.equal(created.capture_status, 'capturing');
+  assert.deepEqual(created.tags.sort(), ['local', 'testing']);
 
-  const note = await fetch(`http://127.0.0.1:${port}/api/items/${item.id}/notes`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body: 'A durable marginal note.' }) });
+  const note = await fetch(`http://127.0.0.1:${port}/api/items/${created.id}/notes`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body: 'A durable marginal note.' }) });
   assert.equal(note.status, 201);
 
-  const progress = await fetch(`http://127.0.0.1:${port}/api/items/${item.id}/progress`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ percent: 47, scrollY: 321 }) });
+  const progress = await fetch(`http://127.0.0.1:${port}/api/items/${created.id}/progress`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ percent: 47, scrollY: 321 }) });
   assert.equal(progress.status, 200);
   assert.equal((await progress.json()).progress, 47);
 
-  const reader = await fetch(`http://127.0.0.1:${port}/api/items/${item.id}`);
-  const saved = await reader.json();
-  assert.equal(saved.scroll_y, 321);
-  assert.equal(saved.notes[0].body, 'A durable marginal note.');
-  assert.equal(saved.capture_status, 'ready');
-  assert.match(await readFile(saved.content_path, 'utf8'), /A local test reading/);
-  assert.ok((await stat(saved.original_path)).isFile());
+  const item = await waitForCapture(port, created.id);
+  assert.equal(item.title, 'A local test reading');
+  assert.equal(item.capture_status, 'ready');
+  assert.equal(item.scroll_y, 321);
+  assert.match(await readFile(item.content_path, 'utf8'), /A local test reading/);
+  assert.ok((await stat(item.original_path)).isFile());
+
+  const reader = await fetch(`http://127.0.0.1:${port}/api/items/${created.id}`);
+  assert.equal((await reader.json()).notes[0].body, 'A durable marginal note.');
 });
 
 test('captures a URL through a deterministic self-hosted Firecrawl fixture', async () => {
   const capture = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sourceUrl: 'https://example.com/' }) });
   assert.equal(capture.status, 201);
-  const item = await capture.json();
+  const created = await capture.json();
+  assert.equal(created.capture_status, 'capturing');
+  const item = await waitForCapture(port, created.id);
+  assert.equal(item.capture_status, 'ready');
   assert.equal(item.title, 'Fixture article');
   assert.equal(item.parser_name, 'self-hosted-firecrawl');
   assert.match(await readFile(item.content_path, 'utf8'), /deterministic local capture/);
   assert.ok((await stat(item.original_path)).isFile());
 });
 
-test('skips Firecrawl for a PDF-looking URL and fails closed without a reachable PDF host', async () => {
+test('skips Firecrawl for a PDF-looking URL and fails closed without a reachable PDF host, with a readable error', async () => {
   const before = firecrawlRequests;
-  const response = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sourceUrl: 'https://example.com/does-not-exist.pdf' }) });
-  assert.equal(response.status, 400);
+  const create = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sourceUrl: 'https://example.com/does-not-exist.pdf' }) });
+  assert.equal(create.status, 201);
+  const item = await waitForCapture(port, (await create.json()).id);
+  assert.equal(item.capture_status, 'failed');
+  assert.ok(item.capture_error && item.capture_error.length > 0);
   assert.equal(firecrawlRequests, before);
 });
 
@@ -136,19 +154,22 @@ test('infers a PDF title from metadata and falls back to its filename', async ()
   const metadataPdf = Buffer.from('%PDF-1.4\n1 0 obj << /Title (A PDF Kept Locally) >>\nendobj').toString('base64');
   const metadata = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'ignored.pdf', fileMime: 'application/pdf', fileData: metadataPdf }) });
   assert.equal(metadata.status, 201);
-  assert.equal((await metadata.json()).title, 'A PDF Kept Locally');
+  const metadataItem = await waitForCapture(port, (await metadata.json()).id);
+  assert.equal(metadataItem.title, 'A PDF Kept Locally');
 
   const filenamePdf = Buffer.from('%PDF-1.4\nno title here').toString('base64');
   const fallback = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'reading_notes-final.pdf', fileMime: 'application/pdf', fileData: filenamePdf }) });
   assert.equal(fallback.status, 201);
-  assert.equal((await fallback.json()).title, 'reading notes final');
+  const fallbackItem = await waitForCapture(port, (await fallback.json()).id);
+  assert.equal(fallbackItem.title, 'reading notes final');
 });
 
 test('converts an uploaded PDF through the mocked PDF-markdown service and stores returned assets', async () => {
   const fileData = Buffer.from('%PDF-1.4 plain upload').toString('base64');
   const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'ok.pdf', fileMime: 'application/pdf', fileData }) });
   assert.equal(create.status, 201);
-  const item = await create.json();
+  const item = await waitForCapture(pdfOkPort, (await create.json()).id);
+  assert.equal(item.capture_status, 'ready');
   assert.equal(item.parser_name, 'pdf-markdown-service');
   assert.match(await readFile(item.content_path, 'utf8'), /Converted via the mocked PDF-markdown service/);
   assert.ok((await stat(join(item.artifact_dir, 'assets', 'fig1.png'))).isFile());
@@ -158,42 +179,77 @@ test('falls back to the local extractor when the PDF service is unreachable', as
   const fileData = Buffer.from('%PDF-1.4\n1 0 obj << /Title (Kept locally) >>\nendobj').toString('base64');
   const create = await fetch(`http://127.0.0.1:${pdfUnreachablePort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'x.pdf', fileMime: 'application/pdf', fileData }) });
   assert.equal(create.status, 201);
-  const item = await create.json();
+  const item = await waitForCapture(pdfUnreachablePort, (await create.json()).id);
+  assert.equal(item.capture_status, 'ready');
   assert.equal(item.parser_name, 'pdfjs-text-layer');
   assert.equal(item.title, 'Kept locally');
 });
 
-test('surfaces a PDF-service HTTP failure instead of silently degrading', async () => {
+test('surfaces a PDF-service HTTP failure instead of silently degrading, with a readable error', async () => {
   const fileData = Buffer.from('%PDF-1.4 TRIGGER_500').toString('base64');
   const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'bad.pdf', fileMime: 'application/pdf', fileData }) });
-  assert.equal(create.status, 400);
+  assert.equal(create.status, 201);
+  const item = await waitForCapture(pdfOkPort, (await create.json()).id);
+  assert.equal(item.capture_status, 'failed');
+  assert.match(item.capture_error, /500/);
 });
 
-test('surfaces an empty-markdown PDF-service response as a failure', async () => {
+test('surfaces an empty-markdown PDF-service response as a failure, with a readable error', async () => {
   const fileData = Buffer.from('%PDF-1.4 TRIGGER_EMPTY').toString('base64');
   const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'empty.pdf', fileMime: 'application/pdf', fileData }) });
-  assert.equal(create.status, 400);
+  assert.equal(create.status, 201);
+  const item = await waitForCapture(pdfOkPort, (await create.json()).id);
+  assert.equal(item.capture_status, 'failed');
+  assert.ok(item.capture_error && item.capture_error.length > 0);
 });
 
 test('treats a slow PDF-service response as a failure, not a silent fallback', async () => {
   const fileData = Buffer.from('%PDF-1.4 TRIGGER_SLOW').toString('base64');
   const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'slow.pdf', fileMime: 'application/pdf', fileData }) });
-  assert.equal(create.status, 400);
+  assert.equal(create.status, 201);
+  const item = await waitForCapture(pdfOkPort, (await create.json()).id);
+  assert.equal(item.capture_status, 'failed');
+  assert.ok(item.capture_error && item.capture_error.length > 0);
 });
 
 test("sanitizes PDF-service image filenames to stay inside the item's assets directory", async () => {
   const fileData = Buffer.from('%PDF-1.4 TRIGGER_TRAVERSAL').toString('base64');
   const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'trav.pdf', fileMime: 'application/pdf', fileData }) });
   assert.equal(create.status, 201);
-  const item = await create.json();
+  const item = await waitForCapture(pdfOkPort, (await create.json()).id);
+  assert.equal(item.capture_status, 'ready');
   assert.ok((await stat(join(item.artifact_dir, 'assets', 'evil.png'))).isFile());
   await assert.rejects(stat(join(item.artifact_dir, '..', 'evil.png')));
+});
+
+test('retries a failed capture, re-running it against the stored source', async () => {
+  const fileData = Buffer.from('%PDF-1.4 TRIGGER_500').toString('base64');
+  const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'retry-me.pdf', fileMime: 'application/pdf', fileData }) });
+  const created = await create.json();
+  const failed = await waitForCapture(pdfOkPort, created.id);
+  assert.equal(failed.capture_status, 'failed');
+
+  const retry = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items/${created.id}/retry`, { method: 'POST' });
+  assert.equal(retry.status, 200);
+  assert.equal((await retry.json()).capture_status, 'capturing');
+
+  const finished = await waitForCapture(pdfOkPort, created.id);
+  assert.equal(finished.capture_status, 'failed');
+  assert.match(finished.capture_error, /500/);
+});
+
+test('rejects retrying an item that is not in a failed state', async () => {
+  const capture = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sourceUrl: 'https://example.com/' }) });
+  const created = await capture.json();
+  await waitForCapture(port, created.id);
+  const retry = await fetch(`http://127.0.0.1:${port}/api/items/${created.id}/retry`, { method: 'POST' });
+  assert.equal(retry.status, 400);
 });
 
 test('deletes an item, its row, and its artifact directory', async () => {
   const fileData = Buffer.from('%PDF-1.4\nno metadata here').toString('base64');
   const create = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'to-delete.pdf', fileMime: 'application/pdf', fileData }) });
-  const item = await create.json();
+  const item = await waitForCapture(port, (await create.json()).id);
   assert.ok((await stat(item.artifact_dir)).isDirectory());
 
   const del = await fetch(`http://127.0.0.1:${port}/api/items/${item.id}`, { method: 'DELETE' });

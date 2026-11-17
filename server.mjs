@@ -37,14 +37,15 @@ for (const sql of [
   'ALTER TABLE items ADD COLUMN parser_name TEXT',
   'ALTER TABLE items ADD COLUMN parser_version TEXT',
   'ALTER TABLE items ADD COLUMN source_fetched_at TEXT',
-  'ALTER TABLE items ADD COLUMN source_content_type TEXT'
+  'ALTER TABLE items ADD COLUMN source_content_type TEXT',
+  'ALTER TABLE items ADD COLUMN capture_error TEXT'
 ]) { try { db.exec(sql); } catch (error) { if (!/duplicate column/i.test(error.message)) throw error; } }
 
 const legacyExamples = ['The Case for the Creative Reading List', 'Ways of Seeing a System', 'Designing for the Long Middle', 'A Field Guide to Taking Notes', 'The More-than-Human Interface', 'Building Things That Last'];
 db.prepare(`DELETE FROM items WHERE title IN (${legacyExamples.map(() => '?').join(',')})`).run(...legacyExamples);
 
 function item(row) { return { ...row, id: Number(row.id), progress: Number(row.progress ?? 0), tags: row.tags ? row.tags.split('||') : [] }; }
-const select = `i.id,i.title,i.author,i.kind,i.source_url,i.body,i.file_name,i.file_mime,i.colour,i.artifact_dir,i.content_path,i.original_path,i.capture_status,i.parser_name,i.source_fetched_at,COALESCE(p.percent,0) progress,COALESCE(p.scroll_y,0) scroll_y,COALESCE(GROUP_CONCAT(t.name,'||'),'') tags`;
+const select = `i.id,i.title,i.author,i.kind,i.source_url,i.body,i.file_name,i.file_mime,i.colour,i.artifact_dir,i.content_path,i.original_path,i.capture_status,i.capture_error,i.parser_name,i.source_fetched_at,COALESCE(p.percent,0) progress,COALESCE(p.scroll_y,0) scroll_y,COALESCE(GROUP_CONCAT(t.name,'||'),'') tags`;
 function listItems() { return db.prepare(`SELECT ${select} FROM items i LEFT JOIN reading_progress p ON p.item_id=i.id LEFT JOIN item_tags it ON it.item_id=i.id LEFT JOIN tags t ON t.id=it.tag_id GROUP BY i.id ORDER BY i.updated_at DESC`).all().map(item); }
 function getItem(id) { const row = db.prepare(`SELECT ${select} FROM items i LEFT JOIN reading_progress p ON p.item_id=i.id LEFT JOIN item_tags it ON it.item_id=i.id LEFT JOIN tags t ON t.id=it.tag_id WHERE i.id=? GROUP BY i.id`).get(id); return row && item(row); }
 function notes(id) { return db.prepare('SELECT id,body,created_at,updated_at FROM notes WHERE item_id=? ORDER BY updated_at DESC').all(id); }
@@ -166,6 +167,16 @@ async function capturePdf(fileName, data, id) {
   await writeImages(dir, images);
   return { title, dir, contentPath, originalPath: original, markdown, parser, contentType: 'application/pdf', originalMime: 'application/pdf', kind: 'pdf' };
 }
+async function runCapture(id, sourceUrl, file, fileName) {
+  try {
+    const captured = sourceUrl ? await captureUrl(sourceUrl, id) : await capturePdf(fileName, file, id);
+    db.prepare('UPDATE items SET title=?,body=?,file_mime=COALESCE(file_mime,?),artifact_dir=?,content_path=?,original_path=?,capture_status=?,capture_error=NULL,parser_name=?,parser_version=?,source_fetched_at=CURRENT_TIMESTAMP,source_content_type=?,kind=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(captured.title,captured.markdown,captured.originalMime,captured.dir,captured.contentPath,captured.originalPath,'ready',captured.parser,'1',captured.contentType,captured.kind,id);
+  } catch (error) {
+    console.error(error);
+    await rm(join(libraryDir, String(id)), { recursive: true, force: true }).catch(() => {});
+    db.prepare('UPDATE items SET capture_status=?,capture_error=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run('failed', error.message || 'Something went wrong locally.', id);
+  }
+}
 
 const server=createServer(async (req,res)=>{
   const url=new URL(req.url, `http://${req.headers.host}`); const path=url.pathname;
@@ -175,16 +186,16 @@ const server=createServer(async (req,res)=>{
     if (path === '/api/items' && req.method === 'POST') {
       const x=await body(req); const sourceUrl=x.sourceUrl?.trim(); const file=x.fileData ? Buffer.from(x.fileData,'base64') : null; const isPdf=Boolean(file) && (x.fileMime==='application/pdf' || /\.pdf$/i.test(x.fileName||''));
       if (!sourceUrl && !isPdf) return json(res,400,{error:'Paste a URL or choose a PDF.'}); if (sourceUrl && file) return json(res,400,{error:'Add one thing at a time: a URL or a PDF.'});
+      if (sourceUrl) await safeRemoteUrl(sourceUrl);
       const kind=isPdf?'pdf':'article'; const out=db.prepare('INSERT INTO items(title,author,kind,source_url,file_name,file_mime,file_data,colour,capture_status) VALUES(?,?,?,?,?,?,?,?,?)').run('Capturing…','',kind,sourceUrl||null,isPdf?(x.fileName||'reading.pdf'):null,isPdf?'application/pdf':null,file,'#6d625c','capturing'); const id=Number(out.lastInsertRowid);
-      let captured;
-      try { captured=sourceUrl ? await captureUrl(sourceUrl,id) : await capturePdf(x.fileName,file,id); }
-      catch (error) { db.prepare('DELETE FROM items WHERE id=?').run(id); await rm(join(libraryDir, String(id)), { recursive: true, force: true }); throw error; }
-      db.prepare('UPDATE items SET title=?,body=?,file_mime=COALESCE(file_mime,?),artifact_dir=?,content_path=?,original_path=?,capture_status=?,parser_name=?,parser_version=?,source_fetched_at=CURRENT_TIMESTAMP,source_content_type=?,kind=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(captured.title,captured.markdown,captured.originalMime,captured.dir,captured.contentPath,captured.originalPath,'ready',captured.parser,'1',captured.contentType,captured.kind,id);
-      db.prepare('INSERT INTO reading_progress(item_id) VALUES(?)').run(id); withTags(id,Array.isArray(x.tags)?x.tags:[]); return json(res,201,getItem(id));
+      db.prepare('INSERT INTO reading_progress(item_id) VALUES(?)').run(id); withTags(id,Array.isArray(x.tags)?x.tags:[]);
+      runCapture(id,sourceUrl,file,x.fileName).catch(error=>console.error('Background capture failed unexpectedly:',error));
+      return json(res,201,getItem(id));
     }
     const match=path.match(/^\/api\/items\/(\d+)(?:\/(.+))?$/); if(match) { const id=Number(match[1]), action=match[2]; if (!getItem(id)) return json(res,404,{error:'Not found'});
       if (!action && req.method==='GET') return json(res,200,{...getItem(id),notes:notes(id)});
       if (!action && req.method==='DELETE') { db.prepare('DELETE FROM items WHERE id=?').run(id); await rm(join(libraryDir,String(id)),{recursive:true,force:true}); return json(res,200,{ok:true}); }
+      if (action==='retry' && req.method==='POST') { const row=db.prepare('SELECT source_url,file_name,file_data,capture_status FROM items WHERE id=?').get(id); if (row.capture_status!=='failed') return json(res,400,{error:'Only a failed item can be retried.'}); db.prepare('UPDATE items SET capture_status=?,capture_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?').run('capturing',id); runCapture(id,row.source_url,row.file_data?Buffer.from(row.file_data):null,row.file_name).catch(error=>console.error('Background capture failed unexpectedly:',error)); return json(res,200,getItem(id)); }
       if (action==='progress' && req.method==='PUT') { const x=await body(req); db.prepare('INSERT INTO reading_progress(item_id,percent,scroll_y,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(item_id) DO UPDATE SET percent=excluded.percent,scroll_y=excluded.scroll_y,updated_at=CURRENT_TIMESTAMP').run(id,Math.max(0,Math.min(100,Number(x.percent)||0)),Math.max(0,Number(x.scrollY)||0)); return json(res,200,getItem(id)); }
       if (action==='notes' && req.method==='POST') { const x=await body(req); if(!x.body?.trim()) return json(res,400,{error:'A note cannot be empty.'}); const out=db.prepare('INSERT INTO notes(item_id,body) VALUES(?,?)').run(id,x.body.trim()); return json(res,201,db.prepare('SELECT id,body,created_at,updated_at FROM notes WHERE id=?').get(out.lastInsertRowid)); }
       if (action==='original' && req.method==='GET') { const row=db.prepare('SELECT original_path,file_mime,file_name FROM items WHERE id=?').get(id); if(!row.original_path) return json(res,404,{error:'No original attached'}); const data=await readFile(row.original_path); res.writeHead(200,{'content-type':row.file_mime||'application/octet-stream','content-disposition':`inline; filename="${row.file_name||basename(row.original_path)}"`}); return res.end(data); }
