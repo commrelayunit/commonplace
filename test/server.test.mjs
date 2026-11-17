@@ -189,3 +189,17 @@ test("sanitizes PDF-service image filenames to stay inside the item's assets dir
   assert.ok((await stat(join(item.artifact_dir, 'assets', 'evil.png'))).isFile());
   await assert.rejects(stat(join(item.artifact_dir, '..', 'evil.png')));
 });
+
+test('deletes an item, its row, and its artifact directory', async () => {
+  const fileData = Buffer.from('%PDF-1.4\nno metadata here').toString('base64');
+  const create = await fetch(`http://127.0.0.1:${port}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'to-delete.pdf', fileMime: 'application/pdf', fileData }) });
+  const item = await create.json();
+  assert.ok((await stat(item.artifact_dir)).isDirectory());
+
+  const del = await fetch(`http://127.0.0.1:${port}/api/items/${item.id}`, { method: 'DELETE' });
+  assert.equal(del.status, 200);
+
+  const after = await fetch(`http://127.0.0.1:${port}/api/items/${item.id}`);
+  assert.equal(after.status, 404);
+  await assert.rejects(stat(item.artifact_dir));
+});
