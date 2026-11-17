@@ -1,60 +1,77 @@
 # Commonplace
 
-A local-first, private reading-list POC: a quiet shelf for URLs and PDFs, local Markdown, notes, optional tags, and a saved place. It deliberately contains no accounts, sharing, club features, highlights, export, or hosted capture APIs.
+A local-first, private reading list. Save URLs and PDFs, read them as clean local Markdown, jot notes in the margin, and pick up where you left off. No accounts, no sharing, no cloud — everything lives in a SQLite file on disk.
 
-## Run locally
+![Reading list shelf](docs/screenshots/shelf.png)
 
-Requires Node 22.5+ (this POC uses Node's built-in `node:sqlite` module).
+## What it is
+
+- **Private by default** — single-user, no login, no telemetry, no hosted capture APIs.
+- **Local-first** — items, notes, tags, and reading progress all live in one SQLite file. Delete `data/` and you're back to zero.
+- **Format-agnostic reading** — both web articles and PDFs are converted to Markdown on capture, so the reader is the same surface either way, and progress tracking means something for both.
+
+## How it works
+
+**Add to shelf** — paste a URL or upload a PDF.
+
+![Add to reading list dialog](docs/screenshots/add-dialog.png)
+
+- A **URL** is fetched by a self-hosted [Firecrawl](https://github.com/mendableai/firecrawl) instance if you've configured one, otherwise by a bounded local fetch + [Readability](https://github.com/mozilla/readability) extraction (public HTTP(S) only, no loopback/private/link-local targets, no redirects, time and size capped). A URL that turns out to be a PDF — by content-type or magic bytes, not just its extension — is routed to the PDF path instead.
+- A **PDF** is converted by the optional `services/pdf-markdown` service (a FastAPI wrapper around locally run [Marker](https://github.com/datalab-to/marker), good with complex layouts and extracted figures) when `PDF_SERVICE_BASE_URL` is set, falling back to a lightweight PDF.js text-layer extraction otherwise. The original file is always kept alongside the Markdown.
+
+**Read** — the reader always shows the local Markdown copy, with the original (`source.html` / `original.pdf`) one click away for reference.
+
+![Article in the reader, with notes and progress in the sidebar](docs/screenshots/reader-article.png)
+
+![PDF converted to Markdown, with extracted figures inline](docs/screenshots/reader-pdf.png)
+
+- Scroll position and percent-read are saved automatically as you read.
+- Margin notes are saved per item.
+- Fetched content is untrusted: it's rendered as escaped Markdown, never raw HTML.
+
+Everything captured lands in `data/library/<item-id>/` (original file, `content.md`, `assets/`); SQLite (`data/commonplace.sqlite`) tracks items, capture provenance, tags, notes, and progress. The schema is in `db/schema.sql`.
+
+## Running it
+
+Requires Node 22.5+ (uses the built-in `node:sqlite` module).
 
 ```sh
 npm start
 # open http://localhost:4173
 ```
 
-`npm run dev` restarts the server while editing. `npm run check` syntax-checks the local server and browser script. Copy `.env.example` to `.env` to change bounded intake limits or enable an optional self-hosted Firecrawl endpoint.
+- `npm run dev` — restarts the server on file changes.
+- `npm run check` — syntax-checks the server and browser script.
+- `npm test` — runs the test suite.
 
-All data lives in `data/commonplace.sqlite`, created empty on first start. The SQLite schema is tracked in `db/schema.sql`; it tracks items, capture provenance, artifact paths, tags/item-tags, notes, and per-item reading progress. Captured files live in `data/library/<item-id>/`; deleting `data/` resets the POC completely.
+Copy `.env.example` to `.env` to adjust capture limits or wire up the optional Firecrawl/PDF services. Both are off by default — URL capture falls back to local Readability, PDF capture falls back to PDF.js.
 
-## POC flows
-
-- Add either a public URL or a local PDF through **add to shelf**. URL capture writes `source.html` and cleaned `content.md`; PDF capture writes `original.pdf` and a Markdown text-layer conversion. The reader always reads the local Markdown copy, so progress is meaningful for both formats.
-- A captured item is arranged as `library/<id>/content.md`, its original (`source.html` or `original.pdf`), and `assets/`. SQLite records parser name/version, content type, capture timestamp, and artifact paths.
-- URL capture prefers the configured self-hosted Firecrawl `/v1/scrape` endpoint and otherwise uses a bounded local HTML + Mozilla Readability fallback (safe DNS resolution, public HTTP(S) only, 8-second timeout, 25 MB response cap — the same combined HTML/PDF probe fetch is used either way, since the URL's actual content can't be known until after it's fetched). Set `CAPTURE_BROWSER_FALLBACK=true` only when Playwright is installed and browser-rendered pages are needed. It never calls Firecrawl Cloud. Asset collection is reserved for the adapter/next pass, so the current fallback does not download arbitrary tracker images.
-- PDF conversion goes through the optional `services/pdf-markdown` service when `PDF_SERVICE_BASE_URL` is set. It is a small FastAPI wrapper around locally run Marker that accepts a PDF at `POST /convert` and returns Markdown (plus any extracted images), so complex layouts convert well. Marker's models are downloaded once and cached in the `pdf-markdown-cache` volume; no cloud OCR or API key is involved. If the service is unset or unreachable, capture falls back to PDF.js for a lightweight local text-layer extraction. The original PDF is retained either way. A URL whose path ends in `.pdf` is always routed to this PDF path instead of Firecrawl, verified by checking the response's content type or that the fetched bytes start with the PDF magic number rather than trusting the extension alone; if a `.pdf`-looking URL turns out to serve HTML instead (a login wall, say), it's captured as an article through the local Readability fallback, never through Firecrawl. A PDF served at a URL that does *not* end in `.pdf` (some `arxiv.org` or DOI-redirect links, for example) is only caught by this path when Firecrawl is unconfigured or fails — with `FIRECRAWL_BASE_URL` set, such a URL still goes to Firecrawl like any other link, a deliberate trade-off that avoids fetching every URL twice and avoids a real-network test dependency when Firecrawl is enabled.
-- Add notes in the margin. Scroll position and progress are written to SQLite locally. Original PDFs remain accessible from the reader as a reference, but are not the canonical reading surface.
-
-## Recovery and security
-
-The content of a fetched page is untrusted and rendered as escaped local Markdown. The local URL path rejects loopback, private, link-local, CGNAT, and `.local` targets; it does not follow redirects and imposes time/size limits. Keep Firecrawl private, configure the equivalent outbound/private-address blocks in Firecrawl itself, and never point `FIRECRAWL_BASE_URL` at a hosted Firecrawl API.
-
-## Containers and LXC
-
-Docker keeps the data volume separate and binds to loopback by default:
-
-```sh
-cp .env.example .env
-docker compose up -d --build
-```
-
-For a new host or LXC, the installer supports Docker (default) and a Node-only LXC install. Review the script before piping it into a shell:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/commrelayunit/commonplace/main/scripts/install.sh | sh
-# or, inside an LXC with Node 22.5+ installed:
-curl -fsSL https://raw.githubusercontent.com/commrelayunit/commonplace/main/scripts/install.sh | sh -s -- --mode lxc
-```
-
-The LXC path installs dependencies and prepares `data/`; run `npm start` under the container's service manager. Neither mode deploys or configures Firecrawl. Add its private URL to `.env` only after the instance has its own outbound SSRF controls.
-
-### Local dev dependencies
-
-`compose.yaml` on its own is the production stack: only Commonplace. To develop against the PDF service and a self-hosted Firecrawl, layer the dev overlay on top of it. This is a two-step workflow (the overlay includes Firecrawl's compose file, which needs Docker Compose 2.20+):
+### Developing against Firecrawl + the PDF service
 
 ```sh
 scripts/dev-bootstrap.sh    # once: clones Firecrawl at a pinned tag into .dev/firecrawl
 docker compose -f compose.yaml -f compose.dev.yaml up -d
 ```
 
-`compose.dev.yaml` builds `services/pdf-markdown` and publishes it on `PDF_SERVICE_PORT` (default 8008). The bootstrap script prints the `FIRECRAWL_BASE_URL` and `PDF_SERVICE_BASE_URL` lines to add to `.env`, but those `localhost` values are only correct for `npm start` on the host. When Commonplace runs in the container alongside the overlay, use the Compose service name on the shared network instead, such as `http://pdf-markdown:8008`.
+The bootstrap script prints the `FIRECRAWL_BASE_URL` / `PDF_SERVICE_BASE_URL` values to add to `.env`. Those are `localhost` URLs for running Commonplace with `npm start` on the host; if Commonplace itself runs in the container, use the Compose service name instead (e.g. `http://pdf-markdown:8008`).
 
-Do not use `compose.dev.yaml` in production. Production runs `docker compose up -d --build` with `compose.yaml` alone, which does not start Firecrawl or the PDF service. In that case, set `FIRECRAWL_BASE_URL` and `PDF_SERVICE_BASE_URL` to wherever those services actually run, or leave `PDF_SERVICE_BASE_URL` blank to use the PDF.js fallback.
+## Deployment
+
+**Docker** (recommended — isolates the data volume, binds to loopback by default):
+
+```sh
+cp .env.example .env
+docker compose up -d --build
+```
+
+`compose.yaml` alone is the production stack — just Commonplace, no Firecrawl, no PDF service. Point `FIRECRAWL_BASE_URL` / `PDF_SERVICE_BASE_URL` at wherever those run, or leave `PDF_SERVICE_BASE_URL` blank to use the PDF.js fallback. Never point `FIRECRAWL_BASE_URL` at hosted Firecrawl Cloud — only a self-hosted instance.
+
+**Bare host / LXC**, via the install script (review it before piping into a shell):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/commrelayunit/commonplace/main/scripts/install.sh | sh
+# or, inside an LXC with Node 22.5+ already installed:
+curl -fsSL https://raw.githubusercontent.com/commrelayunit/commonplace/main/scripts/install.sh | sh -s -- --mode lxc
+```
+
+This installs dependencies and prepares `data/`; run `npm start` under your service manager of choice. Neither install path deploys Firecrawl — add its private URL to `.env` only once that instance has its own outbound SSRF protections.
