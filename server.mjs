@@ -38,14 +38,15 @@ for (const sql of [
   'ALTER TABLE items ADD COLUMN parser_version TEXT',
   'ALTER TABLE items ADD COLUMN source_fetched_at TEXT',
   'ALTER TABLE items ADD COLUMN source_content_type TEXT',
-  'ALTER TABLE items ADD COLUMN capture_error TEXT'
+  'ALTER TABLE items ADD COLUMN capture_error TEXT',
+  'ALTER TABLE items ADD COLUMN cover_image TEXT'
 ]) { try { db.exec(sql); } catch (error) { if (!/duplicate column/i.test(error.message)) throw error; } }
 
 const legacyExamples = ['The Case for the Creative Reading List', 'Ways of Seeing a System', 'Designing for the Long Middle', 'A Field Guide to Taking Notes', 'The More-than-Human Interface', 'Building Things That Last'];
 db.prepare(`DELETE FROM items WHERE title IN (${legacyExamples.map(() => '?').join(',')})`).run(...legacyExamples);
 
 function item(row) { return { ...row, id: Number(row.id), progress: Number(row.progress ?? 0), tags: row.tags ? row.tags.split('||') : [] }; }
-const select = `i.id,i.title,i.author,i.kind,i.source_url,i.body,i.file_name,i.file_mime,i.colour,i.artifact_dir,i.content_path,i.original_path,i.capture_status,i.capture_error,i.parser_name,i.source_fetched_at,COALESCE(p.percent,0) progress,COALESCE(p.scroll_y,0) scroll_y,COALESCE(GROUP_CONCAT(t.name,'||'),'') tags`;
+const select = `i.id,i.title,i.author,i.kind,i.source_url,i.body,i.file_name,i.file_mime,i.colour,i.artifact_dir,i.content_path,i.original_path,i.capture_status,i.capture_error,i.cover_image,i.parser_name,i.source_fetched_at,COALESCE(p.percent,0) progress,COALESCE(p.scroll_y,0) scroll_y,COALESCE(GROUP_CONCAT(t.name,'||'),'') tags`;
 function listItems() { return db.prepare(`SELECT ${select} FROM items i LEFT JOIN reading_progress p ON p.item_id=i.id LEFT JOIN item_tags it ON it.item_id=i.id LEFT JOIN tags t ON t.id=it.tag_id GROUP BY i.id ORDER BY i.updated_at DESC`).all().map(item); }
 function getItem(id) { const row = db.prepare(`SELECT ${select} FROM items i LEFT JOIN reading_progress p ON p.item_id=i.id LEFT JOIN item_tags it ON it.item_id=i.id LEFT JOIN tags t ON t.id=it.tag_id WHERE i.id=? GROUP BY i.id`).get(id); return row && item(row); }
 function notes(id) { return db.prepare('SELECT id,body,created_at,updated_at FROM notes WHERE item_id=? ORDER BY updated_at DESC').all(id); }
@@ -125,7 +126,7 @@ async function captureUrl(sourceUrl, id) {
   }
   const dir=await itemDir(id); const originalPath=join(dir, captured.html ? 'source.html' : 'source-url.txt');
   await writeFile(originalPath, captured.html || `${url.href}\n`); const contentPath=join(dir,'content.md'); await writeFile(contentPath,captured.markdown);
-  return {title:captured.title,dir,contentPath,originalPath,markdown:captured.markdown,parser:captured.parser || 'self-hosted-firecrawl',contentType:captured.contentType,originalMime:captured.html ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8', kind:'article'};
+  return {title:captured.title,author:null,coverImage:null,dir,contentPath,originalPath,markdown:captured.markdown,parser:captured.parser || 'self-hosted-firecrawl',contentType:captured.contentType,originalMime:captured.html ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8', kind:'article'};
 }
 function isConnectionError(error) { return error instanceof TypeError && ['ECONNREFUSED','ENOTFOUND','EAI_AGAIN'].includes(error.cause?.code); }
 
@@ -145,32 +146,49 @@ async function writeImages(dir, images) {
     await writeFile(join(dir, 'assets', basename(name)), Buffer.from(encoded, 'base64'));
   }
 }
+function pickCoverImage(images) { const entries=Object.entries(images||{}); if (!entries.length) return null; entries.sort((a,b)=>b[1].length-a[1].length); return basename(entries[0][0]); }
+function extractPdfByline(markdown) {
+  const heading = markdown.match(/^#\s+(.+?)\s*$/m);
+  if (!heading) return { title: null, author: null };
+  const title = heading[1].replace(/<\/?[^>]+>/g, '').trim() || null;
+  const afterHeading = markdown.slice(heading.index + heading[0].length).split(/\n+/).map(line => line.trim()).filter(Boolean);
+  const candidate = afterHeading.find(line => !/^!\[/.test(line));
+  let author = null;
+  if (candidate) {
+    const cleaned = candidate.replace(/<sup>[^<]*<\/sup>|<sub>[^<]*<\/sub>/gi, '').replace(/\s+/g, ' ').trim();
+    if (cleaned.length < 300 && cleaned.includes(',') && !/[.!?]$/.test(cleaned)) author = cleaned;
+  }
+  return { title, author };
+}
 
 async function capturePdf(fileName, data, id) {
-  const title = inferPdfTitle(fileName, data);
+  const metadataTitle = inferPdfTitle(fileName, data);
   const dir = await itemDir(id);
   const original = join(dir, 'original.pdf');
   const contentPath = join(dir, 'content.md');
   await writeFile(original, data);
-  let markdown, parser, images = {};
+  let markdown, parser, images = {}, title = metadataTitle, author = null;
   if (config.pdfServiceBaseUrl) {
     try {
       const result = await pdfServiceConvert(data);
       markdown = result.markdown; images = result.images || {}; parser = 'pdf-markdown-service';
+      const byline = extractPdfByline(markdown);
+      if (byline.title) title = byline.title;
+      author = byline.author;
     } catch (error) {
       if (!isConnectionError(error)) throw error;
       console.warn(`PDF service unreachable: ${error.message}`);
     }
   }
-  if (!markdown) { markdown = await pdfToMarkdown(data, title); parser = 'pdfjs-text-layer'; }
+  if (!markdown) { markdown = await pdfToMarkdown(data, metadataTitle); parser = 'pdfjs-text-layer'; }
   await writeFile(contentPath, markdown);
   await writeImages(dir, images);
-  return { title, dir, contentPath, originalPath: original, markdown, parser, contentType: 'application/pdf', originalMime: 'application/pdf', kind: 'pdf' };
+  return { title, author, coverImage: pickCoverImage(images), dir, contentPath, originalPath: original, markdown, parser, contentType: 'application/pdf', originalMime: 'application/pdf', kind: 'pdf' };
 }
 async function runCapture(id, sourceUrl, file, fileName) {
   try {
     const captured = sourceUrl ? await captureUrl(sourceUrl, id) : await capturePdf(fileName, file, id);
-    db.prepare('UPDATE items SET title=?,body=?,file_mime=COALESCE(file_mime,?),artifact_dir=?,content_path=?,original_path=?,capture_status=?,capture_error=NULL,parser_name=?,parser_version=?,source_fetched_at=CURRENT_TIMESTAMP,source_content_type=?,kind=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(captured.title,captured.markdown,captured.originalMime,captured.dir,captured.contentPath,captured.originalPath,'ready',captured.parser,'1',captured.contentType,captured.kind,id);
+    db.prepare('UPDATE items SET title=?,author=?,body=?,file_mime=COALESCE(file_mime,?),artifact_dir=?,content_path=?,original_path=?,capture_status=?,capture_error=NULL,cover_image=?,parser_name=?,parser_version=?,source_fetched_at=CURRENT_TIMESTAMP,source_content_type=?,kind=?,updated_at=CURRENT_TIMESTAMP WHERE id=?').run(captured.title,captured.author||'',captured.markdown,captured.originalMime,captured.dir,captured.contentPath,captured.originalPath,'ready',captured.coverImage,captured.parser,'1',captured.contentType,captured.kind,id);
   } catch (error) {
     console.error(error);
     await rm(join(libraryDir, String(id)), { recursive: true, force: true }).catch(() => {});

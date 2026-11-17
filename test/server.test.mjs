@@ -63,6 +63,7 @@ before(async () => {
     if (body.includes('TRIGGER_EMPTY')) { response.writeHead(200, { 'content-type': 'application/json' }); return response.end(JSON.stringify({ markdown: '', images: {} })); }
     if (body.includes('TRIGGER_SLOW')) await new Promise(resolve => setTimeout(resolve, 3000));
     if (body.includes('TRIGGER_TRAVERSAL')) { response.writeHead(200, { 'content-type': 'application/json' }); return response.end(JSON.stringify({ markdown: '# Traversal\n\nShould stay inside assets/.', images: { '../../evil.png': Buffer.from('fake').toString('base64') } })); }
+    if (body.includes('TRIGGER_BYLINE')) { response.writeHead(200, { 'content-type': 'application/json' }); return response.end(JSON.stringify({ markdown: '![](_page_0_Picture_1.jpeg)\n\n# The Real Paper Title\n\n![](_page_0_Picture_2.jpeg)\n\nAda Lovelace , Grace Hopper <sup>b</sup>\n\nBody text follows.', images: { '_page_0_Picture_1.jpeg': Buffer.from('small').toString('base64'), '_page_0_Picture_2.jpeg': Buffer.from('a much bigger fake image payload').toString('base64') } })); }
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ markdown: '# Fixture PDF\n\nConverted via the mocked PDF-markdown service.', images: { 'fig1.png': Buffer.from('fake-image-bytes').toString('base64') } }));
   });
@@ -184,6 +185,16 @@ test('converts an uploaded PDF through the mocked PDF-markdown service and store
 
   const traversal = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items/${item.id}/assets/..%2F..%2F..%2Fetc%2Fpasswd`);
   assert.equal(traversal.status, 404);
+});
+
+test('prefers the markdown heading/byline over junk PDF metadata, and picks the largest image as the cover', async () => {
+  const fileData = Buffer.from('%PDF-1.4 TRIGGER_BYLINE\n1 0 obj << /Title (Main Text) /Author (F-0864-New) >>\nendobj').toString('base64');
+  const create = await fetch(`http://127.0.0.1:${pdfOkPort}/api/items`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'byline.pdf', fileMime: 'application/pdf', fileData }) });
+  const item = await waitForCapture(pdfOkPort, (await create.json()).id);
+  assert.equal(item.capture_status, 'ready');
+  assert.equal(item.title, 'The Real Paper Title');
+  assert.equal(item.author, 'Ada Lovelace , Grace Hopper');
+  assert.equal(item.cover_image, '_page_0_Picture_2.jpeg');
 });
 
 test('falls back to the local extractor when the PDF service is unreachable', async () => {
