@@ -42,7 +42,10 @@ def convert_pdf_bytes(data: bytes) -> dict:
         temp_file.write(data)
         temp_file.close()
 
-        converter = PdfConverter(artifact_dict=get_models())
+        # marker-pdf 2.1.0's equation OCR hard-crashes without a llama-server
+        # binary; disabling it trades LaTeX-quality equations for working
+        # image extraction (broken in 2.2.0) without that extra dependency.
+        converter = PdfConverter(artifact_dict=get_models(), config={"ocr_equations": False})
         rendered = converter(temp_file.name)
         markdown, _, images = text_from_rendered(rendered)
 
